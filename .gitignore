@@ -1,0 +1,7 @@
+.venv/
+models/
+separated/
+separated_hq/
+downloads/
+__pycache__/
+*.bak

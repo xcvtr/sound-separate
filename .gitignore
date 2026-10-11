@@ -5,3 +5,13 @@ separated_hq/
 downloads/
 __pycache__/
 *.bak
+
+# audio files
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.ogg
+*.aac
+*.opus
+*.mp4

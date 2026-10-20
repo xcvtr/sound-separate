@@ -21,7 +21,6 @@ param(
     [ValidateSet('', 'vocals', 'drums', 'bass', 'other', 'guitar', 'piano')]
     [string]$TwoStems = '',
 
-    [ValidateSet('vocals', 'drums', 'bass', 'other', 'guitar', 'piano')]
     [string[]]$Stems = @(),
 
     [string]$Dir = '',
@@ -34,6 +33,9 @@ param(
     [int]$Segment = 0,
 
     [int]$Shifts = 0,
+
+    [ValidateSet('mp3', 'wav')]
+    [string]$Format = 'mp3',
 
     [switch]$Mp3,
 
@@ -79,18 +81,48 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
   -Device <dev>     cuda или cpu (по умолчанию авто).
   -Segment <сек>    Размер чанка; уменьшить при нехватке видеопамяти.
   -Shifts <n>       Больше сдвигов = лучше, но медленнее (HQ по умолчанию 2).
-  -Mp3              Сохранять в mp3 вместо wav (только обычный режим).
+  -Format <fmt>     Формат результата: mp3 или wav. По умолчанию mp3.
   -Extra <арг...>   Доп. аргументы Demucs в обычном режиме.
   -Help             Показать эту справку.
+
+Результат: плоские файлы <трек>_<стем>.<fmt> в -Out (напр. test_drums.mp3),
+без промежуточных папок модели и трека.
 
 Примеры:
   .\separate.ps1 test.mp3
   .\separate.ps1 "song.mp3" -HQ
-  .\separate.ps1 "song.mp3" -SixStems -Mp3
+  .\separate.ps1 "song.mp3" -SixStems -Format wav
   .\separate.ps1 "song.mp3" -TwoStems vocals
   .\separate.ps1 "song.mp3" -HQ -Stems vocals,drums
   .\separate.ps1 -Dir ".\songs" -Recurse -Stems vocals
 '@
+}
+
+function Flatten-Stems {
+    param(
+        [string]$OutDir,
+        [string]$ModelSub,
+        [string[]]$Keep
+    )
+    $base = if ($ModelSub) { Join-Path $OutDir $ModelSub } else { $OutDir }
+    if (-not (Test-Path -LiteralPath $base)) { return }
+
+    $trackDirs = @(Get-ChildItem -LiteralPath $base -Directory)
+    foreach ($td in $trackDirs) {
+        $trackName = $td.Name
+        foreach ($f in Get-ChildItem -LiteralPath $td.FullName -File) {
+            if ($Keep -and ($f.BaseName -notin $Keep)) {
+                Remove-Item -LiteralPath $f.FullName -Force
+                continue
+            }
+            $target = Join-Path $OutDir ("{0}_{1}{2}" -f $trackName, $f.BaseName, $f.Extension)
+            Move-Item -LiteralPath $f.FullName -Destination $target -Force
+        }
+        Remove-Item -LiteralPath $td.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($ModelSub) {
+        Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 if ($Help -or (-not $Tracks -and -not $Dir)) {
@@ -100,6 +132,19 @@ if ($Help -or (-not $Tracks -and -not $Dir)) {
 
 $Stems = @($Stems | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToLower() } |
     Where-Object { $_ } | Select-Object -Unique)
+if ($Stems) {
+    $validStems = @('vocals', 'drums', 'bass', 'other', 'guitar', 'piano')
+    $badStems = @($Stems | Where-Object { $_ -notin $validStems })
+    if ($badStems) {
+        throw ("Неверные стемы: {0}. Допустимо: {1}" -f ($badStems -join ', '), ($validStems -join ', '))
+    }
+}
+
+$Format = $Format.Trim().ToLower()
+if ($Mp3) { Write-Warning '-Mp3 устарел; используйте -Format mp3 (значение по умолчанию).' }
+if ($Format -notin @('mp3', 'wav')) {
+    throw ("Неверный формат: {0}. Допустимо: mp3, wav" -f $Format)
+}
 
 $root = $PSScriptRoot
 $python = Join-Path $root '.venv\Scripts\python.exe'
@@ -132,32 +177,37 @@ $resolved = @($resolved | Select-Object -Unique)
 if (-not $resolved) { throw 'Не найдено ни одного входного файла.' }
 
 if ($HQ) {
-    if ($TwoStems -or $Mp3) { Write-Warning '-TwoStems/-Mp3 игнорируются в режиме -HQ.' }
+    if ($TwoStems) { Write-Warning '-TwoStems игнорируется в режиме -HQ.' }
     $outDir = if ($Out) { $Out.Trim() } else { 'separated_hq' }
+    $outDir = [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $outDir))
     $hqArgs = @((Join-Path $root 'hq_separate.py'), '-o', $outDir)
     if ($Device) { $hqArgs += @('--device', $Device) }
     if ($Segment -gt 0) { $hqArgs += @('--segment', $Segment) }
     $hqArgs += @('--shifts', ($(if ($Shifts -gt 0) { $Shifts } else { 2 })))
+    $hqArgs += @('--format', $Format)
     if ($Stems) { $hqArgs += @('--stems', ($Stems -join ',')) }
     if ($Extra) { $hqArgs += $Extra }
     $hqArgs += $resolved
 
     Write-Host 'Режим: HQ (htdemucs_ft + htdemucs_6s) -> vocals, drums, bass, guitar, piano, other' -ForegroundColor Cyan
-    Write-Host ("Вывод:  {0}" -f (Join-Path $root $outDir)) -ForegroundColor Cyan
+    Write-Host ("Вывод:  {0}" -f $outDir) -ForegroundColor Cyan
     Write-Host ''
     & $python @hqArgs
-    exit $LASTEXITCODE
+    $code = $LASTEXITCODE
+    if ($code -eq 0) { Flatten-Stems -OutDir $outDir -ModelSub '' -Keep $Stems }
+    exit $code
 }
 
 $model = if ($SixStems) { 'htdemucs_6s' } else { $Model }
 $outDir = if ($Out) { $Out.Trim() } else { 'separated' }
+$outDir = [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $outDir))
 
 $demucsArgs = @('-m', 'demucs', '-n', $model, '-o', $outDir)
 if ($TwoStems) { $demucsArgs += @('--two-stems', $TwoStems) }
 if ($Device) { $demucsArgs += @('-d', $Device) }
 if ($Segment -gt 0) { $demucsArgs += @('--segment', $Segment) }
 if ($Shifts -gt 0) { $demucsArgs += @('--shifts', $Shifts) }
-if ($Mp3) { $demucsArgs += '--mp3' }
+if ($Format -eq 'mp3') { $demucsArgs += '--mp3' }
 if ($Stems) {
     $unknown = @($Stems | Where-Object { $_ -in @('guitar', 'piano') })
     if ($unknown -and $model -notmatch '6s$') {
@@ -169,23 +219,14 @@ $demucsArgs += $resolved
 
 Write-Host "Модель: $model" -ForegroundColor Cyan
 Write-Host ("Файлов: {0}" -f $resolved.Count) -ForegroundColor Cyan
-Write-Host ("Вывод:  {0}" -f (Join-Path $root $outDir)) -ForegroundColor Cyan
+Write-Host ("Вывод:  {0}" -f $outDir) -ForegroundColor Cyan
 Write-Host ''
 
 & $python @demucsArgs
 $code = $LASTEXITCODE
 
-if ($Stems -and $code -eq 0) {
-    $ext = if ($Mp3) { 'mp3' } else { 'wav' }
-    foreach ($t in $resolved) {
-        $stemDir = Join-Path (Join-Path $root $outDir) (Join-Path $model ([IO.Path]::GetFileNameWithoutExtension($t)))
-        if (-not (Test-Path -LiteralPath $stemDir)) { continue }
-        Get-ChildItem -LiteralPath $stemDir -File -Filter "*.$ext" | ForEach-Object {
-            if ($_.BaseName -notin $Stems) {
-                Remove-Item -LiteralPath $_.FullName -Force
-            }
-        }
-    }
+if ($code -eq 0) {
+    Flatten-Stems -OutDir $outDir -ModelSub $model -Keep $Stems
 }
 
 exit $code

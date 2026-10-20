@@ -21,7 +21,7 @@ def _trim(a, n):
 
 
 def run(track: Path, out_root: Path, device: str, shifts: int, segment, bits: int,
-        as_float: bool, stems: list | None = None) -> Path:
+        as_float: bool, stems: list | None = None, fmt: str = "mp3") -> Path:
     name = track.stem
     outdir = out_root / name
     outdir.mkdir(parents=True, exist_ok=True)
@@ -73,7 +73,7 @@ def run(track: Path, out_root: Path, device: str, shifts: int, segment, bits: in
     for stem, wav in all_stems.items():
         if wav is None or not keep(stem):
             continue
-        path = outdir / f"{stem}.wav"
+        path = outdir / f"{stem}.{fmt}"
         save_audio(
             wav,
             str(path),
@@ -96,6 +96,7 @@ def main():
     ap.add_argument("--bits", type=int, default=24, choices=[16, 24, 32], help="WAV bit depth.")
     ap.add_argument("--float32", dest="as_float", action="store_true", help="Save float32 WAV.")
     ap.add_argument("--stems", default="", help="Comma-separated stems to save (default: all).")
+    ap.add_argument("--format", dest="fmt", default="mp3", choices=["mp3", "wav"], help="Output format.")
     args = ap.parse_args()
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -107,7 +108,7 @@ def main():
         if not track.is_file():
             print(f"skip (not found): {t}", file=sys.stderr)
             continue
-        run(track, out_root, device, args.shifts, args.segment, args.bits, args.as_float, stems)
+        run(track, out_root, device, args.shifts, args.segment, args.bits, args.as_float, stems, args.fmt)
 
 
 if __name__ == "__main__":

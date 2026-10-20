@@ -73,19 +73,22 @@ MDX (.onnx) через audio-separator падает на CPU: onnxruntime-gpu 1.
 RoFormer на GTX 1060 3GB непрактичен: примерно 15x–49x от длительности (5-мин трек ~1–1.5 ч), поэтому основа — Demucs.
 
 Скрипты разделения
-separate.cmd / separate.ps1 — один файл. Режимы: по умолчанию htdemucs; -HQ (htdemucs_ft + htdemucs_6s -> + guitar, piano); -SixStems (htdemucs_6s, один проход); -TwoStems <stem> (stem + «минус»); -Stems <список> (сохранять только выбранные стемы, напр. -Stems vocals,drums; по умолчанию все); batch: -Dir <папка> [-Recurse] обрабатывает все аудиофайлы в папке (mp3/wav/flac/m4a/ogg/opus/aac/wma/aiff и видео mp4/mkv/webm/mov); флаги -Model -Out -Device -Segment -Shifts -Mp3 -Extra -Help.
-hq_separate.py — пайплайн ft+6s: other = ft.other − guitar − piano, вывод 24-бит WAV. Поддерживает --stems (список через запятую); при отсутствии guitar/piano стадия 6s пропускается.
+Запуск из любой папки: в PATH (D:\Appz) лежат shim-файлы D:\Appz\separate.cmd и D:\Appz\ytsep.cmd, которые вызывают ps1 из проекта по абсолютному пути (D:\Dev\sound-separate) и пробрасывают код возврата. Поэтому команды separate / ytsep работают из любого cwd; .venv и hq_separate.py берутся из $PSScriptRoot, а -Out/-Dir разрешаются относительно текущей папки.
+separate.cmd / separate.ps1 — один файл. Режимы: по умолчанию htdemucs; -HQ (htdemucs_ft + htdemucs_6s -> + guitar, piano); -SixStems (htdemucs_6s, один проход); -TwoStems <stem> (stem + «минус»); -Stems <список> (сохранять только выбранные стемы, напр. -Stems vocals,drums; по умолчанию все); batch: -Dir <папка> [-Recurse] обрабатывает все аудиофайлы в папке (mp3/wav/flac/m4a/ogg/opus/aac/wma/aiff и видео mp4/mkv/webm/mov); -Format mp3|wav (по умолчанию mp3, работает и в -HQ); флаги -Model -Out -Device -Segment -Shifts -Extra -Help (устаревший -Mp3 = -Format mp3).
+Вывод плоский: файлы <трек>_<стем>.<fmt> (напр. test_drums.mp3) прямо в -Out; промежуточные папки модели/трека (htdemucs/test) удаляются функцией Flatten-Stems.
+hq_separate.py — пайплайн ft+6s: other = ft.other − guitar − piano. Поддерживает --stems (список через запятую) и --format mp3|wav (по умолчанию mp3); при отсутствии guitar/piano стадия 6s пропускается. mp3 кодируется через lameenc (без ffmpeg), wav — 24-бит.
 
 Загрузка с YouTube
 ytsep.cmd / ytsep.ps1 — скачать и сразу разделить. Загрузку делает готовый системный yt.cmd из PATH (D:\Appz\yt.cmd): качает только аудио в WAV и печатает путь (after_move:filepath); затем вызывается separate.ps1.
 Прямой доступ к YouTube режется DPI (TLS reset), поэтому yt.cmd ходит через локальный NoDPI-прокси http://127.0.0.1:8881 (порт должен слушать) с --impersonate chrome и --cookies-from-browser firefox.
 ytsep ставит YT_NOPAUSE=1 (чтобы батник не ждал клавишу) и передаёт yt.cmd доп. аргументы yt-dlp.
-Параметры ytsep: -DlDir (куда качать, по умолчанию downloads), -Out (куда стемы), -Playlist, -KeepAudio, -Proxy/-NoProxy, -YtdlpArgs, плюс все параметры разделения (-HQ, -SixStems, -TwoStems, -Stems, -Model, -Device, ...).
+Параметры ytsep: -DlDir (куда качать, по умолчанию downloads), -Out (куда стемы), -Playlist, -KeepAudio, -Proxy/-NoProxy, -YtdlpArgs, плюс все параметры разделения (-HQ, -SixStems, -TwoStems, -Stems, -Format, -Model, -Device, ...).
 
 Команды
   .\separate.cmd test.mp3
   .\separate.cmd test.mp3 -HQ
   .\separate.cmd test.mp3 -SixStems
+  .\separate.cmd test.mp3 -Format wav
   .\separate.cmd -Dir ".\songs" -Recurse -Stems vocals,drums
   .\ytsep.cmd "https://youtu.be/XXXX"
   .\ytsep.cmd "https://youtu.be/XXXX" -HQ

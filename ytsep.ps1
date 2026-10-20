@@ -37,6 +37,9 @@ param(
 
     [int]$Shifts = 0,
 
+    [ValidateSet('mp3', 'wav')]
+    [string]$Format = 'mp3',
+
     [switch]$Mp3,
 
     [switch]$HQ,
@@ -86,7 +89,7 @@ ytsep.ps1 / ytsep.cmd — скачать звук из YouTube (через yt.cm
   -Device <dev>         cuda или cpu.
   -Segment <сек>        Размер чанка при нехватке видеопамяти.
   -Shifts <n>           Больше сдвигов = лучше/медленнее.
-  -Mp3                  Сохранять стемы в mp3.
+  -Format <fmt>         Формат стемов: mp3 или wav (по умолчанию mp3).
   -Help                 Показать эту справку.
 
 Примеры:
@@ -164,6 +167,7 @@ if ($Stems) { $sepParams['Stems'] = $Stems }
 if ($Device) { $sepParams['Device'] = $Device }
 if ($Segment -gt 0) { $sepParams['Segment'] = $Segment }
 if ($Shifts -gt 0) { $sepParams['Shifts'] = $Shifts }
+if ($Format) { $sepParams['Format'] = $Format }
 if ($Mp3) { $sepParams['Mp3'] = $true }
 if ($HQ) { $sepParams['HQ'] = $true }
 if ($SixStems) { $sepParams['SixStems'] = $true }

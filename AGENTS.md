@@ -73,7 +73,7 @@ MDX (.onnx) через audio-separator падает на CPU: onnxruntime-gpu 1.
 RoFormer на GTX 1060 3GB непрактичен: примерно 15x–49x от длительности (5-мин трек ~1–1.5 ч), поэтому основа — Demucs.
 
 Скрипты разделения
-separate.cmd / separate.ps1 — один файл. Режимы: по умолчанию htdemucs; -HQ (htdemucs_ft + htdemucs_6s -> + guitar, piano); -SixStems (htdemucs_6s, один проход); -TwoStems <stem> (stem + «минус»); -Stems <список> (сохранять только выбранные стемы, напр. -Stems vocals,drums; по умолчанию все); флаги -Model -Out -Device -Segment -Shifts -Mp3 -Extra -Help.
+separate.cmd / separate.ps1 — один файл. Режимы: по умолчанию htdemucs; -HQ (htdemucs_ft + htdemucs_6s -> + guitar, piano); -SixStems (htdemucs_6s, один проход); -TwoStems <stem> (stem + «минус»); -Stems <список> (сохранять только выбранные стемы, напр. -Stems vocals,drums; по умолчанию все); batch: -Dir <папка> [-Recurse] обрабатывает все аудиофайлы в папке (mp3/wav/flac/m4a/ogg/opus/aac/wma/aiff и видео mp4/mkv/webm/mov); флаги -Model -Out -Device -Segment -Shifts -Mp3 -Extra -Help.
 hq_separate.py — пайплайн ft+6s: other = ft.other − guitar − piano, вывод 24-бит WAV. Поддерживает --stems (список через запятую); при отсутствии guitar/piano стадия 6s пропускается.
 
 Загрузка с YouTube
@@ -86,6 +86,7 @@ ytsep ставит YT_NOPAUSE=1 (чтобы батник не ждал клав�
   .\separate.cmd test.mp3
   .\separate.cmd test.mp3 -HQ
   .\separate.cmd test.mp3 -SixStems
+  .\separate.cmd -Dir ".\songs" -Recurse -Stems vocals,drums
   .\ytsep.cmd "https://youtu.be/XXXX"
   .\ytsep.cmd "https://youtu.be/XXXX" -HQ
   .\ytsep.cmd "https://youtu.be/XXXX" -SixStems -KeepAudio

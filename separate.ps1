@@ -24,6 +24,10 @@ param(
     [ValidateSet('vocals', 'drums', 'bass', 'other', 'guitar', 'piano')]
     [string[]]$Stems = @(),
 
+    [string]$Dir = '',
+
+    [switch]$Recurse,
+
     [ValidateSet('', 'cuda', 'cpu')]
     [string]$Device = '',
 
@@ -51,6 +55,7 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
 
 Использование:
   .\separate.ps1 <файлы> [параметры]
+  .\separate.ps1 -Dir <папка> [-Recurse] [параметры]
 
 Режимы:
   (по умолчанию)    htdemucs: vocals, drums, bass, other. Быстро.
@@ -62,6 +67,9 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
 
 Параметры:
   -Model <имя>      Модель (по умолчанию htdemucs). Пример: htdemucs_ft, htdemucs_6s.
+  -Dir <папка>      Обработать все аудиофайлы в папке (batch). Можно указать вместо
+                    списка файлов.
+  -Recurse          С -Dir: включать вложенные папки.
   -Out <папка>      Куда сохранять. По умолчанию: separated (или separated_hq для -HQ).
   -TwoStems <stem>  Только выбранный stem и "минус" (vocals|drums|bass|other|guitar|piano).
   -Stems <s...>     Сохранять только перечисленные стемы (через запятую или пробел).
@@ -81,10 +89,11 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
   .\separate.ps1 "song.mp3" -SixStems -Mp3
   .\separate.ps1 "song.mp3" -TwoStems vocals
   .\separate.ps1 "song.mp3" -HQ -Stems vocals,drums
+  .\separate.ps1 -Dir ".\songs" -Recurse -Stems vocals
 '@
 }
 
-if ($Help -or -not $Tracks) {
+if ($Help -or (-not $Tracks -and -not $Dir)) {
     Show-Usage
     exit 0
 }
@@ -104,6 +113,22 @@ foreach ($t in $Tracks) {
     if ($items) { $resolved += $items.FullName }
     else { Write-Warning "Файл не найден: $t" }
 }
+
+if ($Dir) {
+    $dirPath = Get-Item -Path $Dir -ErrorAction SilentlyContinue
+    if (-not $dirPath -or -not $dirPath.PSIsContainer) {
+        throw "Папка не найдена: $Dir"
+    }
+    $exts = @('.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.wma', '.aiff', '.aif', '.mp4', '.mkv', '.webm', '.mov')
+    $found = Get-ChildItem -Path $dirPath.FullName -File -Recurse:$Recurse |
+        Where-Object { $exts -contains $_.Extension.ToLower() }
+    if (-not $found) {
+        Write-Warning ("В папке нет аудиофайлов: {0}" -f $dirPath.FullName)
+    }
+    $resolved += ($found | ForEach-Object { $_.FullName })
+}
+
+$resolved = @($resolved | Select-Object -Unique)
 if (-not $resolved) { throw 'Не найдено ни одного входного файла.' }
 
 if ($HQ) {

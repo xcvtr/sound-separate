@@ -21,6 +21,9 @@ param(
     [ValidateSet('', 'vocals', 'drums', 'bass', 'other', 'guitar', 'piano')]
     [string]$TwoStems = '',
 
+    [ValidateSet('vocals', 'drums', 'bass', 'other', 'guitar', 'piano')]
+    [string[]]$Stems = @(),
+
     [ValidateSet('', 'cuda', 'cpu')]
     [string]$Device = '',
 
@@ -61,6 +64,10 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
   -Model <имя>      Модель (по умолчанию htdemucs). Пример: htdemucs_ft, htdemucs_6s.
   -Out <папка>      Куда сохранять. По умолчанию: separated (или separated_hq для -HQ).
   -TwoStems <stem>  Только выбранный stem и "минус" (vocals|drums|bass|other|guitar|piano).
+  -Stems <s...>     Сохранять только перечисленные стемы (через запятую или пробел).
+                    По умолчанию — все. Пример: -Stems vocals,drums.
+                    В -HQ пропускает лишние стадии; в обычном режиме удаляет
+                    лишние файлы после разделения (время не экономится).
   -Device <dev>     cuda или cpu (по умолчанию авто).
   -Segment <сек>    Размер чанка; уменьшить при нехватке видеопамяти.
   -Shifts <n>       Больше сдвигов = лучше, но медленнее (HQ по умолчанию 2).
@@ -73,6 +80,7 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
   .\separate.ps1 "song.mp3" -HQ
   .\separate.ps1 "song.mp3" -SixStems -Mp3
   .\separate.ps1 "song.mp3" -TwoStems vocals
+  .\separate.ps1 "song.mp3" -HQ -Stems vocals,drums
 '@
 }
 
@@ -80,6 +88,9 @@ if ($Help -or -not $Tracks) {
     Show-Usage
     exit 0
 }
+
+$Stems = @($Stems | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToLower() } |
+    Where-Object { $_ } | Select-Object -Unique)
 
 $root = $PSScriptRoot
 $python = Join-Path $root '.venv\Scripts\python.exe'
@@ -102,6 +113,7 @@ if ($HQ) {
     if ($Device) { $hqArgs += @('--device', $Device) }
     if ($Segment -gt 0) { $hqArgs += @('--segment', $Segment) }
     $hqArgs += @('--shifts', ($(if ($Shifts -gt 0) { $Shifts } else { 2 })))
+    if ($Stems) { $hqArgs += @('--stems', ($Stems -join ',')) }
     if ($Extra) { $hqArgs += $Extra }
     $hqArgs += $resolved
 
@@ -121,6 +133,12 @@ if ($Device) { $demucsArgs += @('-d', $Device) }
 if ($Segment -gt 0) { $demucsArgs += @('--segment', $Segment) }
 if ($Shifts -gt 0) { $demucsArgs += @('--shifts', $Shifts) }
 if ($Mp3) { $demucsArgs += '--mp3' }
+if ($Stems) {
+    $unknown = @($Stems | Where-Object { $_ -in @('guitar', 'piano') })
+    if ($unknown -and $model -notmatch '6s$') {
+        Write-Warning ("Стемы guitar/piano доступны только в htdemucs_6s (или режиме -HQ): " + ($unknown -join ', '))
+    }
+}
 if ($Extra) { $demucsArgs += $Extra }
 $demucsArgs += $resolved
 
@@ -130,4 +148,19 @@ Write-Host ("Вывод:  {0}" -f (Join-Path $root $outDir)) -ForegroundColor Cy
 Write-Host ''
 
 & $python @demucsArgs
-exit $LASTEXITCODE
+$code = $LASTEXITCODE
+
+if ($Stems -and $code -eq 0) {
+    $ext = if ($Mp3) { 'mp3' } else { 'wav' }
+    foreach ($t in $resolved) {
+        $stemDir = Join-Path (Join-Path $root $outDir) (Join-Path $model ([IO.Path]::GetFileNameWithoutExtension($t)))
+        if (-not (Test-Path -LiteralPath $stemDir)) { continue }
+        Get-ChildItem -LiteralPath $stemDir -File -Filter "*.$ext" | ForEach-Object {
+            if ($_.BaseName -notin $Stems) {
+                Remove-Item -LiteralPath $_.FullName -Force
+            }
+        }
+    }
+}
+
+exit $code

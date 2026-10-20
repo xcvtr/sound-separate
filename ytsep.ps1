@@ -27,6 +27,9 @@ param(
     [ValidateSet('', 'vocals', 'drums', 'bass', 'other', 'guitar', 'piano')]
     [string]$TwoStems = '',
 
+    [ValidateSet('vocals', 'drums', 'bass', 'other', 'guitar', 'piano')]
+    [string[]]$Stems = @(),
+
     [ValidateSet('', 'cuda', 'cpu')]
     [string]$Device = '',
 
@@ -79,6 +82,7 @@ ytsep.ps1 / ytsep.cmd — скачать звук из YouTube (через yt.cm
   -Model <имя>          Модель (по умолчанию htdemucs).
   -Out <папка>          Куда сохранять стемы (по умолчанию separated/separated_hq).
   -TwoStems <stem>      Только выбранный stem и "минус".
+  -Stems <s...>         Сохранять только перечисленные стемы (по умолчанию все).
   -Device <dev>         cuda или cpu.
   -Segment <сек>        Размер чанка при нехватке видеопамяти.
   -Shifts <n>           Больше сдвигов = лучше/медленнее.
@@ -156,6 +160,7 @@ $sepParams = @{}
 if ($Model) { $sepParams['Model'] = $Model }
 if ($Out) { $sepParams['Out'] = $Out }
 if ($TwoStems) { $sepParams['TwoStems'] = $TwoStems }
+if ($Stems) { $sepParams['Stems'] = $Stems }
 if ($Device) { $sepParams['Device'] = $Device }
 if ($Segment -gt 0) { $sepParams['Segment'] = $Segment }
 if ($Shifts -gt 0) { $sepParams['Shifts'] = $Shifts }

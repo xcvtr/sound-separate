@@ -73,14 +73,14 @@ MDX (.onnx) через audio-separator падает на CPU: onnxruntime-gpu 1.
 RoFormer на GTX 1060 3GB непрактичен: примерно 15x–49x от длительности (5-мин трек ~1–1.5 ч), поэтому основа — Demucs.
 
 Скрипты разделения
-separate.cmd / separate.ps1 — один файл. Режимы: по умолчанию htdemucs; -HQ (htdemucs_ft + htdemucs_6s -> + guitar, piano); -SixStems (htdemucs_6s, один проход); -TwoStems <stem> (stem + «минус»); флаги -Model -Out -Device -Segment -Shifts -Mp3 -Extra -Help.
-hq_separate.py — пайплайн ft+6s: other = ft.other − guitar − piano, вывод 24-бит WAV.
+separate.cmd / separate.ps1 — один файл. Режимы: по умолчанию htdemucs; -HQ (htdemucs_ft + htdemucs_6s -> + guitar, piano); -SixStems (htdemucs_6s, один проход); -TwoStems <stem> (stem + «минус»); -Stems <список> (сохранять только выбранные стемы, напр. -Stems vocals,drums; по умолчанию все); флаги -Model -Out -Device -Segment -Shifts -Mp3 -Extra -Help.
+hq_separate.py — пайплайн ft+6s: other = ft.other − guitar − piano, вывод 24-бит WAV. Поддерживает --stems (список через запятую); при отсутствии guitar/piano стадия 6s пропускается.
 
 Загрузка с YouTube
 ytsep.cmd / ytsep.ps1 — скачать и сразу разделить. Загрузку делает готовый системный yt.cmd из PATH (D:\Appz\yt.cmd): качает только аудио в WAV и печатает путь (after_move:filepath); затем вызывается separate.ps1.
 Прямой доступ к YouTube режется DPI (TLS reset), поэтому yt.cmd ходит через локальный NoDPI-прокси http://127.0.0.1:8881 (порт должен слушать) с --impersonate chrome и --cookies-from-browser firefox.
 ytsep ставит YT_NOPAUSE=1 (чтобы батник не ждал клавишу) и передаёт yt.cmd доп. аргументы yt-dlp.
-Параметры ytsep: -DlDir (куда качать, по умолчанию downloads), -Out (куда стемы), -Playlist, -KeepAudio, -Proxy/-NoProxy, -YtdlpArgs, плюс все параметры разделения (-HQ, -SixStems, -TwoStems, -Model, -Device, ...).
+Параметры ytsep: -DlDir (куда качать, по умолчанию downloads), -Out (куда стемы), -Playlist, -KeepAudio, -Proxy/-NoProxy, -YtdlpArgs, плюс все параметры разделения (-HQ, -SixStems, -TwoStems, -Stems, -Model, -Device, ...).
 
 Команды
   .\separate.cmd test.mp3

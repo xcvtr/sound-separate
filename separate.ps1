@@ -72,7 +72,9 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
   -Dir <папка>      Обработать все аудиофайлы в папке (batch). Можно указать вместо
                     списка файлов.
   -Recurse          С -Dir: включать вложенные папки.
-  -Out <папка>      Куда сохранять. По умолчанию: separated (или separated_hq для -HQ).
+  -Out <папка>      Куда сохранять. По умолчанию: папка separated ВНУТРИ указанной
+                    -Dir (напр. -Dir test -> test\separated), для -HQ - separated_hq.
+                    Без -Dir (одиночные файлы) — .\separated от текущей папки.
   -TwoStems <stem>  Только выбранный stem и "минус" (vocals|drums|bass|other|guitar|piano).
   -Stems <s...>     Сохранять только перечисленные стемы (через запятую или пробел).
                     По умолчанию — все. Пример: -Stems vocals,drums.
@@ -306,6 +308,29 @@ if (-not $env:PYTORCH_CUDA_ALLOC_CONF -and -not $IsWindows) {
 
 $resolved = @()
 $subdirs = @{}   # полный путь исходника -> подпапка внутри -Out ('' = сам -Out)
+
+# Дефолтный -Out лежит ВНУТРИ исходной папки, а не рядом с ней:
+#   -Dir test  -> test\separated   (для -HQ — test\separated_hq)
+#   -Dir .     -> .\separated      (как и раньше)
+# Без -Dir (одиночные файлы) дефолт остаётся относительным от текущей папки.
+$defaultOutName = if ($HQ) { 'separated_hq' } else { 'separated' }
+$outDir = if ($Out) { $Out.Trim() } else { $defaultOutName }
+if (-not $Out -and $Dir) {
+    $dirBase = try { (Get-Item -LiteralPath $Dir -ErrorAction Stop).FullName } catch { $null }
+    if ($dirBase) { $outDir = Join-Path $dirBase $defaultOutName }
+}
+$outDir = if ([IO.Path]::IsPathRooted($outDir)) {
+    [IO.Path]::GetFullPath($outDir)
+} else {
+    [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $outDir))
+}
+$outPrefix = $outDir.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+# Маркер папки вывода. По нему -Dir пропускает результаты прошлых запусков:
+# иначе свои же стемы (par_drums.wav и т.п.) уходят на вход следующего прогона,
+# особенно если новый -Out указывает в другое место.
+$null = New-Item -ItemType Directory -Path $outDir -Force
+Set-Content -LiteralPath (Join-Path $outDir '.sound-separate') -Value 'output dir of separate.ps1' -Encoding utf8
+
 foreach ($t in $Tracks) {
     $items = Get-Item -Path $t -ErrorAction SilentlyContinue
     if ($items) { $resolved += $items.FullName }
@@ -320,6 +345,38 @@ if ($Dir) {
     $exts = @('.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.wma', '.aiff', '.aif', '.mp4', '.mkv', '.webm', '.mov')
     $found = Get-ChildItem -Path $dirPath.FullName -File -Recurse:$Recurse |
         Where-Object { $exts -contains $_.Extension.ToLower() }
+    # -Out по умолчанию лежит внутри -Dir — свои же стемы (и миксы) не должны
+    # попадать во вход следующего запуска.
+    if ($outDir -ne $dirPath.FullName) {
+        $found = $found | Where-Object {
+            -not $_.FullName.StartsWith($outPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+        }
+    }
+    # Плюс наши папки вывода: с маркером .sound-separate и дефолтных имён
+    # separated/separated_hq (последние — результаты прошлых запусков, созданные
+    # до появления маркера). Иначе свои же стемы уходят на вход следующего
+    # прогона: par_drums.wav -> par_drums_drums.wav.
+    $dirs = @(Get-ChildItem -LiteralPath $dirPath.FullName -Directory -Recurse:$Recurse -ErrorAction SilentlyContinue)
+    $legacy = @($dirs | Where-Object {
+            $_.Name -in @('separated', 'separated_hq') -and
+            $_.FullName -ne $outDir   # свой -Out и так отсекается ниже
+        })
+    $marked = @()
+    foreach ($d in @($dirPath.FullName) + @($dirs | Select-Object -ExpandProperty FullName)) {
+        if ($d -in @($legacy | Select-Object -ExpandProperty FullName) -or
+            (Test-Path -LiteralPath (Join-Path $d '.sound-separate'))) {
+            $marked += $d.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+        }
+    }
+    if ($legacy) {
+        Write-Host (">> Пропускаю папки вывода: {0}" -f (($legacy | Select-Object -ExpandProperty FullName) -join ', ')) -ForegroundColor DarkGray
+    }
+    if ($marked) {
+        $found = $found | Where-Object {
+            $p = $_.FullName
+            -not ($marked | Where-Object { $p.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })
+        }
+    }
     if (-not $found) {
         Write-Warning ("В папке нет аудиофайлов: {0}" -f $dirPath.FullName)
     }
@@ -374,8 +431,6 @@ foreach ($p in $resolved) {
 
 if ($HQ) {
     if ($TwoStems) { Write-Warning '-TwoStems игнорируется в режиме -HQ.' }
-    $outDir = if ($Out) { $Out.Trim() } else { 'separated_hq' }
-    $outDir = if ([IO.Path]::IsPathRooted($outDir)) { [IO.Path]::GetFullPath($outDir) } else { [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $outDir)) }
     $hqScript = Join-Path $root 'hq_separate.py'
 
     Write-Host 'Режим: HQ (htdemucs_ft + htdemucs_6s) -> vocals, drums, bass, guitar, piano, other' -ForegroundColor Cyan
@@ -420,8 +475,6 @@ if ($HQ) {
 }
 
 $model = if ($SixStems) { 'htdemucs_6s' } else { $Model }
-$outDir = if ($Out) { $Out.Trim() } else { 'separated' }
-$outDir = if ([IO.Path]::IsPathRooted($outDir)) { [IO.Path]::GetFullPath($outDir) } else { [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $outDir)) }
 $runDemucs = Join-Path $root 'run_demucs.py'
 
 if ($Stems) {

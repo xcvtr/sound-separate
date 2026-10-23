@@ -87,13 +87,14 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
   -Extra <арг...>   Доп. аргументы Demucs в обычном режиме.
   -Help             Показать эту справку.
 
-Результат: в -Out нет промежуточных папок модели и трека; у каждого стема своя
-подпапка с двумя файлами:
-  <стем>\<трек>_<стем>_only.<fmt>  — только инструмент (напр. drums\test_drums_only.mp3);
-  <стем>\<трек>_<стем>.<fmt>       — оригинал + инструмент, инструмент вдвое громче
-                                    оригинала, 2:1 (напр. drums\test_drums.mp3).
+Результат: в -Out нет промежуточных папок модели и трека. Миксы лежат прямо в -Out,
+изолированные стемы — в подпапках <стем>_only:
+  <трек>_<стем>.<fmt>              — оригинал + инструмент, инструмент вдвое громче
+                                     оригинала, 2:1 (напр. separated\test_drums.mp3);
+  <стем>_only\<трек>_<стем>_only.<fmt> — только инструмент, без оригинала
+                                     (напр. separated\drums_only\test_drums_only.mp3).
 При -Dir подпапки исходной папки повторяются в -Out (папка модели не создаётся),
-и в каждой из них — свои подпапки по стемам.
+и в каждой из них — свои миксы и подпапки <стем>_only.
 
 Примеры:
   .\separate.ps1 test.mp3
@@ -182,9 +183,10 @@ function Flatten-Stems {
         Переносит стемы из промежуточных папок модели/трека прямо в -Out.
     .DESCRIPTION
         Demucs (и hq_separate.py) пишут в <Out>/<модель>/<трек>/. Папку модели
-        не оставляем: файлы переносятся в подпапку с именем стема внутри -Out
-        (для -Recurse — в подпапку с исходным именем папки трека), после чего
-        промежуточные папки удаляются.
+        не оставляем: изолированные стемы переносятся в подпапку <стем>_only
+        внутри -Out (для -Recurse — в подпапку с исходным именем папки трека),
+        после чего промежуточные папки удаляются. Миксы (<трек>_<стем>.<fmt>)
+        считает Mix-Stems уже после этого — они лежат прямо в -Out.
         -OnlyTracks ограничивает обход именами реально обработанных файлов,
         чтобы Flatten не трогал уже созданные подпапки вывода (в HQ-режиме
         промежуточной папки модели нет, и -Out обходится целиком).
@@ -211,9 +213,10 @@ function Flatten-Stems {
                 Remove-Item -LiteralPath $f.FullName -Force
                 continue
             }
-            # Каждый стем — в своей подпапке (drums\, vocals\, ...): иначе в одной
-            # папке лежали вперемешку по два файла на каждый стем — каша.
-            $destDir = Join-Path $baseDir $stemName
+            # Изолированный стем — в подпапку <стем>_only (drums_only\, ...),
+            # микс остаётся прямо в -Out. Раньше оба файла лежали в одной папке
+            # стема вперемешку — каша.
+            $destDir = Join-Path $baseDir ("{0}_only" -f $stemName)
             $null = New-Item -ItemType Directory -Path $destDir -Force
             $onlyName = "{0}_only{1}" -f $stemName, $f.Extension
             $target = Join-Path $destDir ("{0}_{1}" -f $trackName, $onlyName)
@@ -229,11 +232,11 @@ function Flatten-Stems {
 function Get-StemOnlyFiles {
     <#
     .SYNOPSIS
-        Файлы <<стем>\<трек>_<стем>_only.<InFormat>> для одного исходника.
+        Файлы <<стем>_only\<трек>_<стем>_only.<InFormat>> для одного исходника.
     .DESCRIPTION
-        Каждый стем лежит в своей подпапке внутри -Out (или подпапки трека при
-        -Recurse). -Keep ограничивает набор стемов, -InFormat задаёт расширение:
-        wav — пока стемы ещё не перекодированы в mp3, mp3 — после.
+        Изолированные стемы лежат в подпапках <стем>_only внутри -Out (или
+        подпапки трека при -Recurse). -Keep ограничивает набор стемов, -InFormat
+        задаёт расширение: wav — пока стемы ещё не перекодированы в mp3, mp3 — после.
     #>
     param(
         [string]$OutDir,
@@ -243,22 +246,24 @@ function Get-StemOnlyFiles {
         [string]$InFormat
     )
     $baseDir = if ($Rel) { Join-Path $OutDir $Rel } else { $OutDir }
-    $stemDirs = @(Get-ChildItem -LiteralPath $baseDir -Directory -ErrorAction SilentlyContinue |
-        Where-Object { -not $Keep -or $_.Name -in $Keep })
-    foreach ($sd in $stemDirs) {
-        Get-ChildItem -LiteralPath $sd.FullName -File -Filter "${TrackName}_*_only.${InFormat}" -ErrorAction SilentlyContinue
+    $onlyDirs = @(Get-ChildItem -LiteralPath $baseDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like '*_only' })
+    foreach ($sd in $onlyDirs) {
+        $stemName = $sd.Name -replace '_only$', ''
+        if ($Keep -and ($stemName -notin $Keep)) { continue }
+        Get-ChildItem -LiteralPath $sd.FullName -File -Filter "${TrackName}_${stemName}_only.${InFormat}" -ErrorAction SilentlyContinue
     }
 }
 
 function Mix-Stems {
     <#
     .SYNOPSIS
-        Досчитывает миксы «оригинал + стем» из уже сохранённых <<стем>\<трек>_<стем>_only.<InFormat>>.
+        Досчитывает миксы «оригинал + стем» из уже сохранённых <<стем>_only\<трек>_<стем>_only.<InFormat>>.
     .DESCRIPTION
-        Для каждого стема пишется один микс — <стем>\<трек>_<стем>.<Format>:
-        инструмент вдвое громче оригинала (2:1). Вариант 1:1 убран: он звучал
-        почти как оригинал и удваивал число файлов. Микс кладётся в ту же
-        подпапку стема, где лежит его _only.
+        Для каждого стема пишется один микс — <трек>_<стем>.<Format> прямо в -Out
+        (изолированный стем остаётся в <стем>_only\): инструмент вдвое громче
+        оригинала (2:1). Вариант 1:1 убран: он звучал почти как оригинал и
+        удваивал число файлов.
         -InFormat позволяет читать WAV, а писать mp3: тогда сумма кодируется
         ровно один раз, без промежуточного mp3 (лишнее lossy-поколение стема).
         Для -Recurse подпапки сохраняются: <<подпапка>\<стем>\...>.
@@ -284,8 +289,9 @@ function Mix-Stems {
         foreach ($of in $onlyFiles) {
             $stemName = $of.BaseName -replace "^${trackName}_", '' -replace '_only$', ''
             if ($Keep -and ($stemName -notin $Keep)) { continue }
-            $mixOut = Join-Path $of.Directory.FullName ("{0}_{1}.{2}" -f $trackName, $stemName, $Format)
-            Write-Host ("Микс 2:1: {0} + {1} -> {2}\{3}" -f (Split-Path $orig -Leaf), $stemName, $of.Directory.Name, (Split-Path $mixOut -Leaf)) -ForegroundColor DarkCyan
+            $mixOut = Join-Path $of.Directory.Parent.FullName ("{0}_{1}.{2}" -f $trackName, $stemName, $Format)
+            $relLabel = if ($rel) { "$rel\" } else { '' }
+            Write-Host ("Микс 2:1: {0} + {1} -> {2}{3}" -f (Split-Path $orig -Leaf), $stemName, $relLabel, (Split-Path $mixOut -Leaf)) -ForegroundColor DarkCyan
             & $Python $script --original $orig --stem $of.FullName --out $mixOut --format $Format --stem-gain $stemGain
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning ("Не удалось смешать: {0}" -f $of.Name)

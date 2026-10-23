@@ -5,6 +5,7 @@ separated_hq/
 downloads/
 __pycache__/
 *.bak
+*.log
 
 # audio files
 *.mp3

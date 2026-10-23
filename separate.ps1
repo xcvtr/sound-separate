@@ -85,8 +85,12 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
   -Extra <арг...>   Доп. аргументы Demucs в обычном режиме.
   -Help             Показать эту справку.
 
-Результат: плоские файлы <трек>_<стем>.<fmt> в -Out (напр. test_drums.mp3),
-без промежуточных папок модели и трека.
+Результат: плоские файлы в -Out, без промежуточных папок модели и трека.
+Для каждого стема пишутся три файла:
+  <трек>_<стем>_only.<fmt>   — только инструмент (напр. test_drums_only.mp3);
+  <трек>_<стем>.<fmt>        — оригинал + инструмент, 1:1 (напр. test_drums.mp3);
+  <трек>_<стем>_2to1.<fmt>   — инструмент громче оригинала, 2:1 (напр. test_drums_2to1.mp3).
+При -Dir подпапки исходной папки повторяются в -Out (папка модели не создаётся).
 
 Примеры:
   .\separate.ps1 test.mp3
@@ -98,30 +102,165 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
 '@
 }
 
+function Resolve-ProjectRoot {
+    <#
+    .SYNOPSIS
+        Ищет корень проекта (где лежат .venv, hq_separate.py, mix_stem.py).
+    .DESCRIPTION
+        Нужен, потому что скрипт могут запускать и копией из другого места
+        (например, shim-ы в PATH), и тогда $PSScriptRoot — не корень проекта.
+        Порядок: $env:SOUND_SEPARATE_HOME -> $PSScriptRoot -> текущая папка ->
+        путь проекта по умолчанию.
+    #>
+    $candidates = @()
+    if ($env:SOUND_SEPARATE_HOME) { $candidates += $env:SOUND_SEPARATE_HOME }
+    $candidates += $PSScriptRoot
+    $candidates += (Get-Location).Path
+    $candidates += 'D:\Dev\sound-separate'
+
+    $ordered = @()
+    $seen = @{}
+    foreach ($c in $candidates) {
+        if (-not $c) { continue }
+        $full = try { [IO.Path]::GetFullPath($c) } catch { $c }
+        if ($seen.ContainsKey($full)) { continue }
+        $seen[$full] = $true
+        $ordered += $full
+    }
+
+    foreach ($full in $ordered) {
+        if ((Test-Path -LiteralPath (Join-Path $full '.venv\Scripts\python.exe')) -and
+            (Test-Path -LiteralPath (Join-Path $full 'hq_separate.py'))) { return $full }
+    }
+    foreach ($full in $ordered) {
+        if (Test-Path -LiteralPath (Join-Path $full '.venv\Scripts\python.exe')) { return $full }
+    }
+    foreach ($full in $ordered) {
+        if (Test-Path -LiteralPath (Join-Path $full 'hq_separate.py')) { return $full }
+    }
+    return $PSScriptRoot
+}
+
+function Resolve-Python {
+    <#
+    .SYNOPSIS
+        Находит интерпретатор с demucs: .venv проекта -> .venv в текущей папке -> системный python.
+    #>
+    param([string]$ProjectRoot)
+
+    $candidates = @()
+    if ($env:SOUND_SEPARATE_PYTHON) { $candidates += $env:SOUND_SEPARATE_PYTHON }
+    if ($ProjectRoot) { $candidates += (Join-Path $ProjectRoot '.venv\Scripts\python.exe') }
+    $candidates += (Join-Path (Get-Location).Path '.venv\Scripts\python.exe')
+    if ($PSScriptRoot) { $candidates += (Join-Path $PSScriptRoot '.venv\Scripts\python.exe') }
+
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+
+    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pyCmd) {
+        Write-Warning "Использую системный python: $($pyCmd.Source)"
+        return $pyCmd.Source
+    }
+    return $null
+}
+
+function Test-DemucsInstalled {
+    param([string]$Python)
+    if (-not $Python) { return $false }
+    & $Python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('demucs') else 1)" 2>$null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Flatten-Stems {
+    <#
+    .SYNOPSIS
+        Переносит стемы из промежуточных папок модели/трека прямо в -Out.
+    .DESCRIPTION
+        Demucs (и hq_separate.py) пишут в <Out>/<модель>/<трек>/. Папку модели
+        не оставляем: файлы переносятся в -Out (для -Recurse — в подпапку с
+        исходным именем папки трека), после чего промежуточные папки удаляются.
+        -OnlyTracks ограничивает обход именами реально обработанных файлов,
+        чтобы Flatten не трогал уже созданные подпапки вывода (в HQ-режиме
+        промежуточной папки модели нет, и -Out обходится целиком).
+    #>
     param(
         [string]$OutDir,
         [string]$ModelSub,
-        [string[]]$Keep
+        [string[]]$Keep,
+        [hashtable]$Subdirs = @{},
+        [hashtable]$OnlyTracks = $null
     )
     $base = if ($ModelSub) { Join-Path $OutDir $ModelSub } else { $OutDir }
     if (-not (Test-Path -LiteralPath $base)) { return }
 
-    $trackDirs = @(Get-ChildItem -LiteralPath $base -Directory)
+    $trackDirs = @(Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue |
+        Where-Object { -not $OnlyTracks -or $OnlyTracks.Contains($_.Name) })
     foreach ($td in $trackDirs) {
         $trackName = $td.Name
+        $rel = if ($Subdirs.ContainsKey($trackName)) { [string]$Subdirs[$trackName] } else { '' }
+        $destDir = if ($rel) { Join-Path $OutDir $rel } else { $OutDir }
+        if ($rel) { $null = New-Item -ItemType Directory -Path $destDir -Force }
         foreach ($f in Get-ChildItem -LiteralPath $td.FullName -File) {
-            if ($Keep -and ($f.BaseName -notin $Keep)) {
+            $stemName = $f.BaseName -replace '_only$', ''
+            if ($Keep -and ($stemName -notin $Keep)) {
                 Remove-Item -LiteralPath $f.FullName -Force
                 continue
             }
-            $target = Join-Path $OutDir ("{0}_{1}{2}" -f $trackName, $f.BaseName, $f.Extension)
+            $onlyName = "{0}_only{1}" -f $stemName, $f.Extension
+            $target = Join-Path $destDir ("{0}_{1}" -f $trackName, $onlyName)
             Move-Item -LiteralPath $f.FullName -Destination $target -Force
         }
         Remove-Item -LiteralPath $td.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
     if ($ModelSub) {
         Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Mix-Stems {
+    <#
+    .SYNOPSIS
+        Досчитывает миксы «оригинал + стем» из уже сохранённых <трек>_<стем>_only.<fmt>.
+    .DESCRIPTION
+        Для каждого стема пишутся два варианта:
+          <трек>_<стем>.<fmt>       — оригинал + инструмент, 1:1;
+          <трек>_<стем>_2to1.<fmt>  — инструмент вдвое громче оригинала (2:1).
+        Для -Recurse файлы ищутся и создаются в той же подпапке, что и _only.
+    #>
+    param(
+        [string]$OutDir,
+        [string[]]$Originals,
+        [string[]]$Keep,
+        [string]$Format,
+        [string]$Python,
+        [string]$ProjectRoot,
+        [hashtable]$Subdirs = @{}
+    )
+    $script = Join-Path $ProjectRoot 'mix_stem.py'
+    # Варианты микса: инструмент : оригинал. Gain — вес стема в сумме.
+    $variants = @(
+        @{ Suffix = '';      Gain = '1' },  # 1:1
+        @{ Suffix = '_2to1'; Gain = '2' }   # 2:1 — выделенный инструмент громче
+    )
+    foreach ($orig in $Originals) {
+        $trackName = [IO.Path]::GetFileNameWithoutExtension($orig)
+        $rel = if ($Subdirs.ContainsKey($orig)) { [string]$Subdirs[$orig] } else { '' }
+        $srcDir = if ($rel) { Join-Path $OutDir $rel } else { $OutDir }
+        $onlyFiles = @(Get-ChildItem -LiteralPath $srcDir -File -Filter "${trackName}_*_only.$Format" -ErrorAction SilentlyContinue)
+        foreach ($of in $onlyFiles) {
+            $stemName = $of.BaseName -replace "^${trackName}_", '' -replace '_only$', ''
+            if ($Keep -and ($stemName -notin $Keep)) { continue }
+            foreach ($v in $variants) {
+                $mixOut = Join-Path $srcDir ("{0}_{1}{2}.{3}" -f $trackName, $stemName, $v.Suffix, $Format)
+                Write-Host ("Микс: {0} + {1} -> {2}" -f (Split-Path $orig -Leaf), $stemName, (Split-Path $mixOut -Leaf)) -ForegroundColor DarkCyan
+                & $Python $script --original $orig --stem $of.FullName --out $mixOut --format $Format --stem-gain $v.Gain
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warning ("Не удалось смешать: {0}" -f $of.Name)
+                }
+            }
+        }
     }
 }
 
@@ -146,13 +285,27 @@ if ($Format -notin @('mp3', 'wav')) {
     throw ("Неверный формат: {0}. Допустимо: mp3, wav" -f $Format)
 }
 
-$root = $PSScriptRoot
-$python = Join-Path $root '.venv\Scripts\python.exe'
-if (-not (Test-Path -LiteralPath $python)) {
-    throw "Не найден Python окружения: $python`nСначала создайте окружение (.venv) и установите demucs."
+$root = Resolve-ProjectRoot
+$python = Resolve-Python -ProjectRoot $root
+if (-not $python -or -not (Test-Path -LiteralPath $python)) {
+    throw ("Не найден Python. Проверил: {0}. Создай .venv с demucs или добавь python в PATH." -f (Join-Path $root '.venv\Scripts\python.exe'))
+}
+if (-not (Test-DemucsInstalled -Python $python)) {
+    Write-Warning ("В {0} нет пакета demucs — разделение, скорее всего, упадёт. Создай venv: python -m venv .venv; .venv\Scripts\pip install demucs" -f $python)
+}
+
+# Строка самопроверки: сразу видно, какой файл скрипта и какой интерпретатор
+# реально выполнились (копия в PATH или старый файл ведут себя иначе).
+Write-Host ("Скрипт: {0} ({1:yyyy-MM-dd HH:mm}) | python: {2}" -f `
+    $PSCommandPath, (Get-Item -LiteralPath $PSCommandPath).LastWriteTime, $python) -ForegroundColor DarkGray
+
+# Меньше фрагментации VRAM -> реже OOM (на Windows expandable_segments не поддерживается)
+if (-not $env:PYTORCH_CUDA_ALLOC_CONF -and -not $IsWindows) {
+    $env:PYTORCH_CUDA_ALLOC_CONF = 'expandable_segments:True'
 }
 
 $resolved = @()
+$subdirs = @{}   # полный путь исходника -> подпапка внутри -Out ('' = сам -Out)
 foreach ($t in $Tracks) {
     $items = Get-Item -Path $t -ErrorAction SilentlyContinue
     if ($items) { $resolved += $items.FullName }
@@ -170,63 +323,176 @@ if ($Dir) {
     if (-not $found) {
         Write-Warning ("В папке нет аудиофайлов: {0}" -f $dirPath.FullName)
     }
-    $resolved += ($found | ForEach-Object { $_.FullName })
+    foreach ($f in $found) {
+        $resolved += $f.FullName
+        # Внутри папки сохраняем её структуру: файлы из подпапок кладём в
+        # одноимённые подпапки -Out (папку модели не создаём).
+        $rel = [IO.Path]::GetRelativePath($dirPath.FullName, $f.DirectoryName)
+        if ($rel -eq '.') { $rel = '' }
+        $subdirs[$f.FullName] = $rel
+    }
 }
 
 $resolved = @($resolved | Select-Object -Unique)
 if (-not $resolved) { throw 'Не найдено ни одного входного файла.' }
 
+# Предпроверка читаемости. Demucs обрабатывает список последовательно и падает
+# на ПЕРВОМ нечитаемом файле — все следующие треки остаются неразделёнными.
+# Поэтому битые входы отсеиваем сами (ffprobe читает только заголовок).
+$ffprobe = @($env:SOUND_SEPARATE_FFPROBE, (Join-Path $root 'ffprobe.exe'), 'D:\Appz\ffprobe.exe') |
+    Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+if (-not $ffprobe) {
+    $cmd = Get-Command ffprobe -ErrorAction SilentlyContinue
+    if ($cmd) { $ffprobe = $cmd.Source }
+}
+if ($ffprobe) {
+    $readable = @()
+    foreach ($p in $resolved) {
+        & $ffprobe -v error -show_entries format=duration -of csv=p=0 $p *> $null
+        if ($LASTEXITCODE -eq 0) { $readable += $p }
+        else {
+            Write-Warning ("Пропускаю нечитаемый файл: {0}" -f $p)
+            if ($subdirs.ContainsKey($p)) { $subdirs.Remove($p) }
+        }
+    }
+    $resolved = @($readable)
+    if (-not $resolved) { throw 'Ни один входной файл не читается — разделять нечего.' }
+}
+
+# Demucs/hq_separate складывают стемы в папку с именем файла без расширения,
+# поэтому по этому имени определяем, в какую подпапку -Out переносить стемы.
+$trackSubdirs = @{}
+foreach ($p in $resolved) {
+    $key = [IO.Path]::GetFileNameWithoutExtension($p)
+    $rel = if ($subdirs.ContainsKey($p)) { [string]$subdirs[$p] } else { '' }
+    if ($trackSubdirs.ContainsKey($key) -and ([string]$trackSubdirs[$key]) -ne $rel) {
+        Write-Warning ("Одинаковые имена файлов в разных папках ({0}): demucs нумерует вывод по имени файла, результаты перезапишут друг друга." -f $key)
+    } else {
+        $trackSubdirs[$key] = $rel
+    }
+}
+
 if ($HQ) {
     if ($TwoStems) { Write-Warning '-TwoStems игнорируется в режиме -HQ.' }
     $outDir = if ($Out) { $Out.Trim() } else { 'separated_hq' }
-    $outDir = [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $outDir))
-    $hqArgs = @((Join-Path $root 'hq_separate.py'), '-o', $outDir)
-    if ($Device) { $hqArgs += @('--device', $Device) }
-    if ($Segment -gt 0) { $hqArgs += @('--segment', $Segment) }
-    $hqArgs += @('--shifts', ($(if ($Shifts -gt 0) { $Shifts } else { 2 })))
-    $hqArgs += @('--format', $Format)
-    if ($Stems) { $hqArgs += @('--stems', ($Stems -join ',')) }
-    if ($Extra) { $hqArgs += $Extra }
-    $hqArgs += $resolved
+    $outDir = if ([IO.Path]::IsPathRooted($outDir)) { [IO.Path]::GetFullPath($outDir) } else { [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $outDir)) }
+    $hqScript = Join-Path $root 'hq_separate.py'
 
     Write-Host 'Режим: HQ (htdemucs_ft + htdemucs_6s) -> vocals, drums, bass, guitar, piano, other' -ForegroundColor Cyan
     Write-Host ("Вывод:  {0}" -f $outDir) -ForegroundColor Cyan
     Write-Host ''
-    & $python @hqArgs
-    $code = $LASTEXITCODE
-    if ($code -eq 0) { Flatten-Stems -OutDir $outDir -ModelSub '' -Keep $Stems }
+
+    $segment = $Segment
+    $attempt = 0
+    $code = 0
+    while ($true) {
+        $hqArgs = @($hqScript, '-o', $outDir)
+        if ($Device) { $hqArgs += @('--device', $Device) }
+        if ($segment -gt 0) { $hqArgs += @('--segment', $segment) }
+        $hqArgs += @('--shifts', ($(if ($Shifts -gt 0) { $Shifts } else { 2 })))
+        $hqArgs += @('--format', $Format)
+        if ($Stems) { $hqArgs += @('--stems', ($Stems -join ',')) }
+        if ($Extra) { $hqArgs += $Extra }
+        $hqArgs += $resolved
+
+        & $python @hqArgs
+        $code = $LASTEXITCODE
+        if ($code -ne 90) { break }
+        $attempt++
+        $next = if ($segment -gt 0) { [Math]::Max(2, [int][Math]::Floor($segment / 2)) } else { 4 }
+        if ($attempt -ge 3 -or $next -eq $segment) {
+            Write-Warning 'VRAM не хватило даже с минимальным сегментом — попробуй -Device cpu или закрой GPU-приложения.'
+            break
+        }
+        $segment = $next
+        Write-Warning ("Не хватило видеопамяти — повторяю с сегментом {0} c." -f $segment)
+    }
+
+    # Дообработка идёт и при ненулевом коде: в batch часть треков могла
+    # разделиться нормально, и разложить их по местам нужно всё равно.
+    # Сам факт ошибки не скрывается — предупреждение ниже и код возврата.
+    Flatten-Stems -OutDir $outDir -ModelSub '' -Keep $Stems -Subdirs $trackSubdirs -OnlyTracks $trackSubdirs
+    Mix-Stems -OutDir $outDir -Originals $resolved -Keep $Stems -Format $Format -Python $python -ProjectRoot $root -Subdirs $subdirs
+    if ($code -ne 0) {
+        Write-Warning ("hq_separate завершился с кодом {0} — часть треков не разделилась (см. сообщения выше)." -f $code)
+    }
     exit $code
 }
 
 $model = if ($SixStems) { 'htdemucs_6s' } else { $Model }
 $outDir = if ($Out) { $Out.Trim() } else { 'separated' }
-$outDir = [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $outDir))
+$outDir = if ([IO.Path]::IsPathRooted($outDir)) { [IO.Path]::GetFullPath($outDir) } else { [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $outDir)) }
+$runDemucs = Join-Path $root 'run_demucs.py'
 
-$demucsArgs = @('-m', 'demucs', '-n', $model, '-o', $outDir)
-if ($TwoStems) { $demucsArgs += @('--two-stems', $TwoStems) }
-if ($Device) { $demucsArgs += @('-d', $Device) }
-if ($Segment -gt 0) { $demucsArgs += @('--segment', $Segment) }
-if ($Shifts -gt 0) { $demucsArgs += @('--shifts', $Shifts) }
-if ($Format -eq 'mp3') { $demucsArgs += '--mp3' }
 if ($Stems) {
     $unknown = @($Stems | Where-Object { $_ -in @('guitar', 'piano') })
     if ($unknown -and $model -notmatch '6s$') {
         Write-Warning ("Стемы guitar/piano доступны только в htdemucs_6s (или режиме -HQ): " + ($unknown -join ', '))
     }
 }
-if ($Extra) { $demucsArgs += $Extra }
-$demucsArgs += $resolved
 
 Write-Host "Модель: $model" -ForegroundColor Cyan
 Write-Host ("Файлов: {0}" -f $resolved.Count) -ForegroundColor Cyan
 Write-Host ("Вывод:  {0}" -f $outDir) -ForegroundColor Cyan
 Write-Host ''
 
-& $python @demucsArgs
-$code = $LASTEXITCODE
+$segment = $Segment
+$attempt = 0
+$code = 0
+while ($true) {
+    $demucsArgs = @('-n', $model, '-o', $outDir)
+    if ($TwoStems) { $demucsArgs += @('--two-stems', $TwoStems) }
+    if ($Device) { $demucsArgs += @('-d', $Device) }
+    if ($segment -gt 0) { $demucsArgs += @('--segment', $segment) }
+    if ($Shifts -gt 0) { $demucsArgs += @('--shifts', $Shifts) }
+    # Лишние стемы не пишем на диск вовсе (demucs считает все источники
+    # модели разом, но сохранять незапрошенные незачем). В -TwoStems demucs
+    # и так сохраняет только выбранный стем и no_<stem>, поэтому фильтр не
+    # нужен и не применяется.
+    if ($Stems -and -not $TwoStems) {
+        $demucsArgs += @('--keep-stems', ($Stems -join ','))
+    }
+    if ($Extra) { $demucsArgs += $Extra }
+    $demucsArgs += $resolved
 
-if ($code -eq 0) {
-    Flatten-Stems -OutDir $outDir -ModelSub $model -Keep $Stems
+    & $python $runDemucs @demucsArgs
+    $code = $LASTEXITCODE
+    if ($code -ne 90) { break }
+    $attempt++
+    $next = if ($segment -gt 0) { [Math]::Max(2, [int][Math]::Floor($segment / 2)) } else { 4 }
+    if ($attempt -ge 3 -or $next -eq $segment) {
+        Write-Warning 'VRAM не хватило даже с минимальным сегментом — попробуй -Device cpu или закрой GPU-приложения.'
+        break
+    }
+    $segment = $next
+    Write-Warning ("Не хватило видеопамяти — повторяю с сегментом {0} c." -f $segment)
+}
+
+# Дообработка не привязана к коду возврата demucs: в batch один битый файл
+# завершает процесс с ненулевым кодом, хотя остальные треки разделились
+# нормально. Если её пропустить, в <Out> останется сырая папка модели
+# (htdemucs/<трек>/drums.wav) без переименования и без миксов.
+$modelDir = Join-Path $outDir $model
+if (Test-Path -LiteralPath $modelDir) {
+    if ($Format -eq 'mp3') {
+        # Demucs пишет WAV: конвертируем в mp3 через ffmpeg, чтобы файл был gapless
+        # (lameenc оставляет задержку кодировщика ~1105 сэмплов -> стем отстаёт от оригинала).
+        $wav2mp3 = Join-Path $root 'wav2mp3.py'
+        & $python $wav2mp3 -Dir $modelDir
+        if ($LASTEXITCODE -ne 0) {
+            # Не throw: иначе уже готовые WAV-стемы остаются в папке модели
+            # без переименования и без миксов. Раскладываем что есть.
+            Write-Warning 'Не удалось сконвертировать часть WAV-стемов в mp3 — они останутся в WAV.'
+        }
+    }
+    Flatten-Stems -OutDir $outDir -ModelSub $model -Keep $Stems -Subdirs $trackSubdirs -OnlyTracks $trackSubdirs
+    Mix-Stems -OutDir $outDir -Originals $resolved -Keep $Stems -Format $Format -Python $python -ProjectRoot $root -Subdirs $subdirs
+}
+
+if ($code -ne 0) {
+    Write-Host ''
+    Write-Host ("!! demucs завершился с кодом {0} — часть треков не разделилась (см. сообщения выше)." -f $code) -ForegroundColor Red
+    Write-Host (("   Успешно разделённые треки разложены в {0}; код возврата скрипта = {1}." -f $outDir, $code)) -ForegroundColor Red
 }
 
 exit $code

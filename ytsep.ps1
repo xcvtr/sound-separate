@@ -99,6 +99,42 @@ ytsep.ps1 / ytsep.cmd — скачать звук из YouTube (через yt.cm
 '@
 }
 
+function Resolve-ProjectRoot {
+    <#
+    .SYNOPSIS
+        Ищет корень проекта (где лежат separate.ps1 и .venv).
+    .DESCRIPTION
+        Нужен, потому что скрипт могут запускать и копией из другого места
+        (например, shim-ы в PATH), и тогда $PSScriptRoot — не корень проекта.
+        Порядок: $env:SOUND_SEPARATE_HOME -> $PSScriptRoot -> текущая папка ->
+        путь проекта по умолчанию.
+    #>
+    $candidates = @()
+    if ($env:SOUND_SEPARATE_HOME) { $candidates += $env:SOUND_SEPARATE_HOME }
+    $candidates += $PSScriptRoot
+    $candidates += (Get-Location).Path
+    $candidates += 'D:\Dev\sound-separate'
+
+    $ordered = @()
+    $seen = @{}
+    foreach ($c in $candidates) {
+        if (-not $c) { continue }
+        $full = try { [IO.Path]::GetFullPath($c) } catch { $c }
+        if ($seen.ContainsKey($full)) { continue }
+        $seen[$full] = $true
+        $ordered += $full
+    }
+
+    foreach ($full in $ordered) {
+        if ((Test-Path -LiteralPath (Join-Path $full 'separate.ps1')) -and
+            (Test-Path -LiteralPath (Join-Path $full '.venv\Scripts\python.exe'))) { return $full }
+    }
+    foreach ($full in $ordered) {
+        if (Test-Path -LiteralPath (Join-Path $full 'separate.ps1')) { return $full }
+    }
+    return $PSScriptRoot
+}
+
 if ($Help -or -not $Urls) {
     Show-Usage
     exit 0
@@ -109,7 +145,7 @@ if ($bad) {
     throw ("Не URL (проверьте параметры, напр. -Out/-DlDir): " + ($bad -join ', '))
 }
 
-$root = $PSScriptRoot
+$root = Resolve-ProjectRoot
 
 $ytcmd = (Get-Command yt.cmd -ErrorAction SilentlyContinue)
 if (-not $ytcmd) {
@@ -173,12 +209,14 @@ if ($HQ) { $sepParams['HQ'] = $true }
 if ($SixStems) { $sepParams['SixStems'] = $true }
 if ($Extra) { $sepParams['Extra'] = $Extra }
 
+$lastCode = 0
 foreach ($f in $files) {
     Write-Host ''
     Write-Host ("=== Разделение: {0} ===" -f (Split-Path $f -Leaf)) -ForegroundColor Cyan
     & $sepScript -Tracks $f @sepParams
+    if ($LASTEXITCODE -ne 0) { $lastCode = $LASTEXITCODE }
     if (-not $KeepAudio) {
         Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
     }
 }
-exit 0
+exit $lastCode

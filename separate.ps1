@@ -1,4 +1,4 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 <#
 .SYNOPSIS
     Обёртка над Demucs: разделение аудио на дорожки (stems), включая гитару.
@@ -38,6 +38,10 @@ param(
     [string]$Format = 'mp3',
 
     [switch]$Mp3,
+
+    # Вес стема в миксе «оригинал + стем»: 2 — инструмент вдвое громче оригинала.
+    [ValidateRange(0.0, 100.0)]
+    [double]$StemGain = 2,
 
     [switch]$HQ,
 
@@ -84,6 +88,9 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
   -Segment <сек>    Размер чанка; уменьшить при нехватке видеопамяти.
   -Shifts <n>       Больше сдвигов = лучше, но медленнее (HQ по умолчанию 2).
   -Format <fmt>     Формат результата: mp3 или wav. По умолчанию mp3.
+  -StemGain <коэф>  Вес стема в миксе «оригинал + стем». По умолчанию 2
+                    (инструмент вдвое громче оригинала, т.е. 2:1); 1 — 1:1,
+                    0.5 — инструмент вдвое тише оригинала. На _only не влияет.
   -Extra <арг...>   Доп. аргументы Demucs в обычном режиме.
   -Help             Показать эту справку.
 
@@ -100,6 +107,7 @@ separate.ps1 — разделение аудио на дорожки (stems) ч�
   .\separate.ps1 test.mp3
   .\separate.ps1 "song.mp3" -HQ
   .\separate.ps1 "song.mp3" -SixStems -Format wav
+  .\separate.ps1 "song.mp3" -StemGain 1
   .\separate.ps1 "song.mp3" -TwoStems vocals
   .\separate.ps1 "song.mp3" -HQ -Stems vocals,drums
   .\separate.ps1 -Dir ".\songs" -Recurse -Stems vocals
@@ -261,9 +269,9 @@ function Mix-Stems {
         Досчитывает миксы «оригинал + стем» из уже сохранённых <<стем>_only\<трек>_<стем>_only.<InFormat>>.
     .DESCRIPTION
         Для каждого стема пишется один микс — <трек>_<стем>.<Format> прямо в -Out
-        (изолированный стем остаётся в <стем>_only\): инструмент вдвое громче
-        оригинала (2:1). Вариант 1:1 убран: он звучал почти как оригинал и
-        удваивал число файлов.
+        (изолированный стем остаётся в <стем>_only\): вес стема задаёт -StemGain,
+        по умолчанию 2 — инструмент вдвое громче оригинала (2:1). Вариант 1:1
+        убран: он звучал почти как оригинал и удваивал число файлов.
         -InFormat позволяет читать WAV, а писать mp3: тогда сумма кодируется
         ровно один раз, без промежуточного mp3 (лишнее lossy-поколение стема).
         Для -Recurse подпапки сохраняются: <<подпапка>\<стем>\...>.
@@ -274,14 +282,17 @@ function Mix-Stems {
         [string[]]$Keep,
         [string]$Format,
         [string]$InFormat = '',
+        [double]$StemGain = 2,
         [string]$Python,
         [string]$ProjectRoot,
         [hashtable]$Subdirs = @{}
     )
     if (-not $InFormat) { $InFormat = $Format }
     $script = Join-Path $ProjectRoot 'mix_stem.py'
-    # Вес стема в сумме: 2 — инструмент вдвое громче оригинала (2:1).
-    $stemGain = '2'
+    # Вес стема в сумме: по умолчанию 2 — инструмент вдвое громче оригинала (2:1).
+    # И для лога, и для argparse — строка в инвариантной культуре: "1,5" argparse
+    # разобрал бы как мусор, а -f и ToString() форматируют double по локали.
+    $stemGainArg = [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}', $StemGain)
     foreach ($orig in $Originals) {
         $trackName = [IO.Path]::GetFileNameWithoutExtension($orig)
         $rel = if ($Subdirs.ContainsKey($orig)) { [string]$Subdirs[$orig] } else { '' }
@@ -291,8 +302,8 @@ function Mix-Stems {
             if ($Keep -and ($stemName -notin $Keep)) { continue }
             $mixOut = Join-Path $of.Directory.Parent.FullName ("{0}_{1}.{2}" -f $trackName, $stemName, $Format)
             $relLabel = if ($rel) { "$rel\" } else { '' }
-            Write-Host ("Микс 2:1: {0} + {1} -> {2}{3}" -f (Split-Path $orig -Leaf), $stemName, $relLabel, (Split-Path $mixOut -Leaf)) -ForegroundColor DarkCyan
-            & $Python $script --original $orig --stem $of.FullName --out $mixOut --format $Format --stem-gain $stemGain
+            Write-Host ("Микс {0}:1: {1} + {2} -> {3}{4}" -f $stemGainArg, (Split-Path $orig -Leaf), $stemName, $relLabel, (Split-Path $mixOut -Leaf)) -ForegroundColor DarkCyan
+            & $Python $script --original $orig --stem $of.FullName --out $mixOut --format $Format --stem-gain $stemGainArg
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning ("Не удалось смешать: {0}" -f $of.Name)
             }
@@ -544,7 +555,7 @@ if ($HQ) {
     # разделиться нормально, и разложить их по местам нужно всё равно.
     # Сам факт ошибки не скрывается — предупреждение ниже и код возврата.
     Flatten-Stems -OutDir $outDir -ModelSub '' -Keep $Stems -Subdirs $trackSubdirs -OnlyTracks $trackSubdirs
-    Mix-Stems -OutDir $outDir -Originals $resolved -Keep $Stems -Format $Format -InFormat $mixInFormat -Python $python -ProjectRoot $root -Subdirs $subdirs
+    Mix-Stems -OutDir $outDir -Originals $resolved -Keep $Stems -Format $Format -InFormat $mixInFormat -StemGain $StemGain -Python $python -ProjectRoot $root -Subdirs $subdirs
     if ($Format -eq 'mp3') {
         Convert-StemsToMp3 -OutDir $outDir -Originals $resolved -Keep $Stems -Python $python -ProjectRoot $root -Subdirs $subdirs
     }
@@ -612,7 +623,7 @@ if (Test-Path -LiteralPath $modelDir) {
     # оставшиеся <стем>_only.wav перекодирует Convert-StemsToMp3. Раньше стем
     # уходил в mp3 до микса, и микс получался вторым lossy-поколением.
     Flatten-Stems -OutDir $outDir -ModelSub $model -Keep $Stems -Subdirs $trackSubdirs -OnlyTracks $trackSubdirs
-    Mix-Stems -OutDir $outDir -Originals $resolved -Keep $Stems -Format $Format -InFormat 'wav' -Python $python -ProjectRoot $root -Subdirs $subdirs
+    Mix-Stems -OutDir $outDir -Originals $resolved -Keep $Stems -Format $Format -InFormat 'wav' -StemGain $StemGain -Python $python -ProjectRoot $root -Subdirs $subdirs
     if ($Format -eq 'mp3') {
         Convert-StemsToMp3 -OutDir $outDir -Originals $resolved -Keep $Stems -Python $python -ProjectRoot $root -Subdirs $subdirs
     }

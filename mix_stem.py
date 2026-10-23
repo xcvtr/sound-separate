@@ -3,13 +3,15 @@
 
 Reads the original audio and a stem file, aligns the stem to the original,
 sums them sample-for-sample, and writes the result as mp3 or wav. Used to
-produce <track>_<stem>.<fmt> (1:1) and <track>_<stem>_2to1.<fmt> (the stem is
-twice as loud as the original, so the isolated instrument stands out).
+produce <track>_<stem>.<fmt>: the stem is mixed in twice as loud as the
+original (2:1, --stem-gain 2), so the isolated instrument stands out against
+the record. The 1:1 variant was dropped - it sounded like the original and
+just doubled the number of files.
 
-Alignment matters: mp3 stems written by Demucs carry the LAME encoder delay
+Alignment matters: mp3 stems written by lameenc carry the LAME encoder delay
 (~1105 samples at 44.1 kHz, i.e. 25 ms) because lameenc does not write the
 gapless "Info" tag. Without correction the instrument lands 25 ms after the
-original, which sounds like a flam instead of a 1:1 mix.
+original, which sounds like a flam instead of a single instrument in the mix.
 """
 import argparse
 import sys

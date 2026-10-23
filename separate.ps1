@@ -294,6 +294,11 @@ function Mix-Stems {
     )
     if (-not $InFormat) { $InFormat = $Format }
     $script = Join-Path $ProjectRoot 'mix_stem.py'
+    # Декодировать m4a/wma/видео приходится через ffmpeg (libsndfile их не
+    # читает), а это по времени сравнимо с длиной трека, тогда как миксов на
+    # трек столько же, сколько стемов. Кэш декодированного оригинала лежит
+    # в -Out (сканер его пропускает) и удаляется в конце.
+    $decodeCache = Join-Path $OutDir '.decode-cache'
     # Вес стема в сумме: по умолчанию 2 — инструмент вдвое громче оригинала (2:1).
     # И для лога, и для argparse — строка в инвариантной культуре: "1,5" argparse
     # разобрал бы как мусор, а -f и ToString() форматируют double по локали.
@@ -325,12 +330,13 @@ function Mix-Stems {
             $mixOut = Join-Path $of.Directory.Parent.FullName ("{0}_{1}.{2}" -f $trackName, $stemName, $Format)
             $relLabel = if ($rel) { "$rel\" } else { '' }
             Write-Host ("Микс {0}:1: {1} + {2} -> {3}{4}" -f $stemGainArg, (Split-Path $orig -Leaf), $stemName, $relLabel, (Split-Path $mixOut -Leaf)) -ForegroundColor DarkCyan
-            & $Python $script --original $orig --stem $of.FullName --out $mixOut --format $Format --stem-gain $stemGainArg
+            & $Python $script --original $orig --stem $of.FullName --out $mixOut --format $Format --stem-gain $stemGainArg --decode-cache $decodeCache
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning ("Не удалось смешать: {0}" -f $of.Name)
             }
         }
     }
+    Remove-Item -LiteralPath $decodeCache -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 function Convert-StemsToMp3 {

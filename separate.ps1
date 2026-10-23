@@ -259,7 +259,12 @@ function Get-StemOnlyFiles {
     foreach ($sd in $onlyDirs) {
         $stemName = $sd.Name -replace '_only$', ''
         if ($Keep -and ($stemName -notin $Keep)) { continue }
-        Get-ChildItem -LiteralPath $sd.FullName -File -Filter "${TrackName}_${stemName}_only.${InFormat}" -ErrorAction SilentlyContinue
+        # Имя стема сверяем строкой, а не -Filter: -Filter работает по правилам
+        # Win32-шаблонов, а имя трека приходит от пользователя как есть.
+        $wanted = "${TrackName}_${stemName}_only.${InFormat}"
+        foreach ($f in @(Get-ChildItem -LiteralPath $sd.FullName -File -ErrorAction SilentlyContinue)) {
+            if ($f.Name -ieq $wanted) { $f }
+        }
     }
 }
 
@@ -297,8 +302,25 @@ function Mix-Stems {
         $trackName = [IO.Path]::GetFileNameWithoutExtension($orig)
         $rel = if ($Subdirs.ContainsKey($orig)) { [string]$Subdirs[$orig] } else { '' }
         $onlyFiles = @(Get-StemOnlyFiles -OutDir $OutDir -TrackName $trackName -Rel $rel -Keep $Keep -InFormat $InFormat)
+        if (-not $onlyFiles) {
+            # Молчаливый пропуск микса — худший сценарий: в -Out лежат только
+            # <стем>_only, и непонятно, почему микса нет. Говорим прямо.
+            Write-Warning ("Микс не построен: нет стемов {0} для {1} в {2}." -f
+                ($(if ($Keep) { $Keep -join ',' } else { '<стем>_only/*' })), (Split-Path $orig -Leaf), $OutDir)
+        }
         foreach ($of in $onlyFiles) {
-            $stemName = $of.BaseName -replace "^${trackName}_", '' -replace '_only$', ''
+            # Имя стема вычисляем строками, а не -replace "^${trackName}_":
+            # имя трека — не регулярное выражение, а текст. Из-за этого "(Live)"
+            # в имени трека раньше съедало скобки как группу, имя стема получало
+            # префикс трека целиком, и микс уходил в <трек>_<трек>_<стем>.mp3
+            # (а с -Stems, где имя сверяется с -Keep, микс не создавался вовсе).
+            $stemName = $of.BaseName
+            if ($stemName.StartsWith("${trackName}_", [StringComparison]::OrdinalIgnoreCase)) {
+                $stemName = $stemName.Substring($trackName.Length + 1)
+            }
+            if ($stemName.EndsWith('_only', [StringComparison]::Ordinal)) {
+                $stemName = $stemName.Substring(0, $stemName.Length - 5)
+            }
             if ($Keep -and ($stemName -notin $Keep)) { continue }
             $mixOut = Join-Path $of.Directory.Parent.FullName ("{0}_{1}.{2}" -f $trackName, $stemName, $Format)
             $relLabel = if ($rel) { "$rel\" } else { '' }
@@ -416,19 +438,21 @@ $outPrefix = $outDir.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
 $null = New-Item -ItemType Directory -Path $outDir -Force
 Set-Content -LiteralPath (Join-Path $outDir '.sound-separate') -Value 'output dir of separate.ps1' -Encoding utf8
 
+# Пути входов — -LiteralPath: имя файла/папки приходит от пользователя, а
+# -Path трактует [ ] как шаблон ('Song [HD].mp3' не находился вовсе).
 foreach ($t in $Tracks) {
-    $items = Get-Item -Path $t -ErrorAction SilentlyContinue
+    $items = Get-Item -LiteralPath $t -ErrorAction SilentlyContinue
     if ($items) { $resolved += $items.FullName }
     else { Write-Warning "Файл не найден: $t" }
 }
 
 if ($Dir) {
-    $dirPath = Get-Item -Path $Dir -ErrorAction SilentlyContinue
+    $dirPath = Get-Item -LiteralPath $Dir -ErrorAction SilentlyContinue
     if (-not $dirPath -or -not $dirPath.PSIsContainer) {
         throw "Папка не найдена: $Dir"
     }
     $exts = @('.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.wma', '.aiff', '.aif', '.mp4', '.mkv', '.webm', '.mov')
-    $found = Get-ChildItem -Path $dirPath.FullName -File -Recurse:$Recurse |
+    $found = Get-ChildItem -LiteralPath $dirPath.FullName -File -Recurse:$Recurse |
         Where-Object { $exts -contains $_.Extension.ToLower() }
     # -Out по умолчанию лежит внутри -Dir — свои же стемы (и миксы) не должны
     # попадать во вход следующего запуска.

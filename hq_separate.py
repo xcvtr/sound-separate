@@ -91,9 +91,8 @@ def _encode_mp3(wav: torch.Tensor, path: Path, samplerate: int,
                 bitrate: int = 320, quality: int = 2, desc: str = "") -> None:
     """Encode [C, T] float tensor to mp3 with a progress bar.
 
-    Prefer ffmpeg (libmp3lame): it writes the LAME "Info" tag with the encoder
-    delay, so decoders strip it and the file stays sample-aligned with the
-    source. lameenc (fallback) leaves the ~1105 sample delay in place.
+    Prefer ffmpeg (libmp3lame, writes the LAME "Info" gapless tag); lameenc is
+    only a fallback when ffmpeg is missing.
     """
     channels, length = wav.shape
     pcm = (wav.clamp_(-1, 1) * (2 ** 15 - 1)).short().t().contiguous().numpy()

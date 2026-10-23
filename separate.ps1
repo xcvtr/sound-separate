@@ -226,15 +226,41 @@ function Flatten-Stems {
     }
 }
 
+function Get-StemOnlyFiles {
+    <#
+    .SYNOPSIS
+        Файлы <<стем>\<трек>_<стем>_only.<InFormat>> для одного исходника.
+    .DESCRIPTION
+        Каждый стем лежит в своей подпапке внутри -Out (или подпапки трека при
+        -Recurse). -Keep ограничивает набор стемов, -InFormat задаёт расширение:
+        wav — пока стемы ещё не перекодированы в mp3, mp3 — после.
+    #>
+    param(
+        [string]$OutDir,
+        [string]$TrackName,
+        [string]$Rel = '',
+        [string[]]$Keep,
+        [string]$InFormat
+    )
+    $baseDir = if ($Rel) { Join-Path $OutDir $Rel } else { $OutDir }
+    $stemDirs = @(Get-ChildItem -LiteralPath $baseDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { -not $Keep -or $_.Name -in $Keep })
+    foreach ($sd in $stemDirs) {
+        Get-ChildItem -LiteralPath $sd.FullName -File -Filter "${TrackName}_*_only.${InFormat}" -ErrorAction SilentlyContinue
+    }
+}
+
 function Mix-Stems {
     <#
     .SYNOPSIS
-        Досчитывает миксы «оригинал + стем» из уже сохранённых <<стем>\<трек>_<стем>_only.<fmt>>.
+        Досчитывает миксы «оригинал + стем» из уже сохранённых <<стем>\<трек>_<стем>_only.<InFormat>>.
     .DESCRIPTION
-        Для каждого стема пишется один микс — <стем>\<трек>_<стем>.<fmt>:
+        Для каждого стема пишется один микс — <стем>\<трек>_<стем>.<Format>:
         инструмент вдвое громче оригинала (2:1). Вариант 1:1 убран: он звучал
         почти как оригинал и удваивал число файлов. Микс кладётся в ту же
         подпапку стема, где лежит его _only.
+        -InFormat позволяет читать WAV, а писать mp3: тогда сумма кодируется
+        ровно один раз, без промежуточного mp3 (лишнее lossy-поколение стема).
         Для -Recurse подпапки сохраняются: <<подпапка>\<стем>\...>.
     #>
     param(
@@ -242,33 +268,69 @@ function Mix-Stems {
         [string[]]$Originals,
         [string[]]$Keep,
         [string]$Format,
+        [string]$InFormat = '',
         [string]$Python,
         [string]$ProjectRoot,
         [hashtable]$Subdirs = @{}
     )
+    if (-not $InFormat) { $InFormat = $Format }
     $script = Join-Path $ProjectRoot 'mix_stem.py'
     # Вес стема в сумме: 2 — инструмент вдвое громче оригинала (2:1).
     $stemGain = '2'
     foreach ($orig in $Originals) {
         $trackName = [IO.Path]::GetFileNameWithoutExtension($orig)
         $rel = if ($Subdirs.ContainsKey($orig)) { [string]$Subdirs[$orig] } else { '' }
-        $baseDir = if ($rel) { Join-Path $OutDir $rel } else { $OutDir }
-        # Каждый стем лежит в своей подпапке — микс считаем туда же.
-        $stemDirs = @(Get-ChildItem -LiteralPath $baseDir -Directory -ErrorAction SilentlyContinue |
-            Where-Object { -not $Keep -or $_.Name -in $Keep })
-        foreach ($sd in $stemDirs) {
-            $onlyFiles = @(Get-ChildItem -LiteralPath $sd.FullName -File -Filter "${trackName}_*_only.$Format" -ErrorAction SilentlyContinue)
-            foreach ($of in $onlyFiles) {
-                $stemName = $of.BaseName -replace "^${trackName}_", '' -replace '_only$', ''
-                if ($Keep -and ($stemName -notin $Keep)) { continue }
-                $mixOut = Join-Path $sd.FullName ("{0}_{1}.{2}" -f $trackName, $stemName, $Format)
-                Write-Host ("Микс 2:1: {0} + {1} -> {2}\{3}" -f (Split-Path $orig -Leaf), $stemName, $sd.Name, (Split-Path $mixOut -Leaf)) -ForegroundColor DarkCyan
-                & $Python $script --original $orig --stem $of.FullName --out $mixOut --format $Format --stem-gain $stemGain
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Warning ("Не удалось смешать: {0}" -f $of.Name)
-                }
+        $onlyFiles = @(Get-StemOnlyFiles -OutDir $OutDir -TrackName $trackName -Rel $rel -Keep $Keep -InFormat $InFormat)
+        foreach ($of in $onlyFiles) {
+            $stemName = $of.BaseName -replace "^${trackName}_", '' -replace '_only$', ''
+            if ($Keep -and ($stemName -notin $Keep)) { continue }
+            $mixOut = Join-Path $of.Directory.FullName ("{0}_{1}.{2}" -f $trackName, $stemName, $Format)
+            Write-Host ("Микс 2:1: {0} + {1} -> {2}\{3}" -f (Split-Path $orig -Leaf), $stemName, $of.Directory.Name, (Split-Path $mixOut -Leaf)) -ForegroundColor DarkCyan
+            & $Python $script --original $orig --stem $of.FullName --out $mixOut --format $Format --stem-gain $stemGain
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning ("Не удалось смешать: {0}" -f $of.Name)
             }
         }
+    }
+}
+
+function Convert-StemsToMp3 {
+    <#
+    .SYNOPSIS
+        Последний шаг mp3-режима: перекодирует оставшиеся WAV-стемы в mp3.
+    .DESCRIPTION
+        Микс считается по WAV-стемам, поэтому в mp3 каждое поколение уходит
+        ровно один раз (стем и микс отдельно, а не «стем -> mp3 -> сумма ->
+        mp3»). Здесь конвертируются файлы <стем>\<трек>_<стем>_only.wav,
+        оставшиеся после Mix-Stems; wav2mp3.py удаляет исходные WAV.
+        Список файлов передаётся явно (-Files), а не обходом -Out: в -Out могут
+        лежать wav-результаты прошлых запусков, и трогать их нельзя.
+    #>
+    param(
+        [string]$OutDir,
+        [string[]]$Originals,
+        [string[]]$Keep,
+        [string]$InFormat = 'wav',
+        [string]$Python,
+        [string]$ProjectRoot,
+        [hashtable]$Subdirs = @{}
+    )
+    $files = @()
+    foreach ($orig in $Originals) {
+        $trackName = [IO.Path]::GetFileNameWithoutExtension($orig)
+        $rel = if ($Subdirs.ContainsKey($orig)) { [string]$Subdirs[$orig] } else { '' }
+        $files += @(Get-StemOnlyFiles -OutDir $OutDir -TrackName $trackName -Rel $rel -Keep $Keep -InFormat $InFormat |
+            Select-Object -ExpandProperty FullName)
+    }
+    $files = @($files | Select-Object -Unique)
+    if (-not $files) { return }
+
+    $script = Join-Path $ProjectRoot 'wav2mp3.py'
+    $convertArgs = @($script, '-Files') + $files
+    & $Python @convertArgs
+    if ($LASTEXITCODE -ne 0) {
+        # Не throw: миксы в mp3 и часть стемов уже готовы и лежат на месте.
+        Write-Warning 'Не удалось сконвертировать часть WAV-стемов в mp3 — они останутся в WAV.'
     }
 }
 
@@ -446,12 +508,15 @@ if ($HQ) {
     $segment = $Segment
     $attempt = 0
     $code = 0
+    # Промежуточный формат: при -Format mp3 стемы пишем в WAV — микс считается
+    # по WAV, а в mp3 и стем, и микс уходят по одному разу (Convert-StemsToMp3).
+    $mixInFormat = if ($Format -eq 'mp3') { 'wav' } else { $Format }
     while ($true) {
         $hqArgs = @($hqScript, '-o', $outDir)
         if ($Device) { $hqArgs += @('--device', $Device) }
         if ($segment -gt 0) { $hqArgs += @('--segment', $segment) }
         $hqArgs += @('--shifts', ($(if ($Shifts -gt 0) { $Shifts } else { 2 })))
-        $hqArgs += @('--format', $Format)
+        $hqArgs += @('--format', $mixInFormat)
         if ($Stems) { $hqArgs += @('--stems', ($Stems -join ',')) }
         if ($Extra) { $hqArgs += $Extra }
         $hqArgs += $resolved
@@ -473,7 +538,10 @@ if ($HQ) {
     # разделиться нормально, и разложить их по местам нужно всё равно.
     # Сам факт ошибки не скрывается — предупреждение ниже и код возврата.
     Flatten-Stems -OutDir $outDir -ModelSub '' -Keep $Stems -Subdirs $trackSubdirs -OnlyTracks $trackSubdirs
-    Mix-Stems -OutDir $outDir -Originals $resolved -Keep $Stems -Format $Format -Python $python -ProjectRoot $root -Subdirs $subdirs
+    Mix-Stems -OutDir $outDir -Originals $resolved -Keep $Stems -Format $Format -InFormat $mixInFormat -Python $python -ProjectRoot $root -Subdirs $subdirs
+    if ($Format -eq 'mp3') {
+        Convert-StemsToMp3 -OutDir $outDir -Originals $resolved -Keep $Stems -Python $python -ProjectRoot $root -Subdirs $subdirs
+    }
     if ($code -ne 0) {
         Write-Warning ("hq_separate завершился с кодом {0} — часть треков не разделилась (см. сообщения выше)." -f $code)
     }
@@ -533,19 +601,15 @@ while ($true) {
 # (htdemucs/<трек>/drums.wav) без переименования и без миксов.
 $modelDir = Join-Path $outDir $model
 if (Test-Path -LiteralPath $modelDir) {
-    if ($Format -eq 'mp3') {
-        # Demucs пишет WAV: конвертируем в mp3 через ffmpeg, чтобы файл был gapless
-        # (lameenc оставляет задержку кодировщика ~1105 сэмплов -> стем отстаёт от оригинала).
-        $wav2mp3 = Join-Path $root 'wav2mp3.py'
-        & $python $wav2mp3 -Dir $modelDir
-        if ($LASTEXITCODE -ne 0) {
-            # Не throw: иначе уже готовые WAV-стемы остаются в папке модели
-            # без переименования и без миксов. Раскладываем что есть.
-            Write-Warning 'Не удалось сконвертировать часть WAV-стемов в mp3 — они останутся в WAV.'
-        }
-    }
+    # Demucs пишет WAV, и конвертируем их в mp3 уже ПОСЛЕ микса: микс считается
+    # по WAV-стемам (mix_stem.py кодирует сумму в mp3 за одно поколение), а
+    # оставшиеся <стем>_only.wav перекодирует Convert-StemsToMp3. Раньше стем
+    # уходил в mp3 до микса, и микс получался вторым lossy-поколением.
     Flatten-Stems -OutDir $outDir -ModelSub $model -Keep $Stems -Subdirs $trackSubdirs -OnlyTracks $trackSubdirs
-    Mix-Stems -OutDir $outDir -Originals $resolved -Keep $Stems -Format $Format -Python $python -ProjectRoot $root -Subdirs $subdirs
+    Mix-Stems -OutDir $outDir -Originals $resolved -Keep $Stems -Format $Format -InFormat 'wav' -Python $python -ProjectRoot $root -Subdirs $subdirs
+    if ($Format -eq 'mp3') {
+        Convert-StemsToMp3 -OutDir $outDir -Originals $resolved -Keep $Stems -Python $python -ProjectRoot $root -Subdirs $subdirs
+    }
 }
 
 if ($code -ne 0) {

@@ -8,10 +8,12 @@ original (2:1, --stem-gain 2), so the isolated instrument stands out against
 the record. The 1:1 variant was dropped - it sounded like the original and
 just doubled the number of files.
 
-Alignment matters: mp3 stems written by lameenc carry the LAME encoder delay
-(~1105 samples at 44.1 kHz, i.e. 25 ms) because lameenc does not write the
-gapless "Info" tag. Without correction the instrument lands 25 ms after the
-original, which sounds like a flam instead of a single instrument in the mix.
+Alignment matters: demucs' reader (sphn/libsndfile) keeps the LAME encoder
+delay of a compressed (mp3) source, so every stem comes out ~1105 samples at
+44.1 kHz (25 ms) later than the original and 1296 samples longer; a wav source
+has no offset. This holds for wav stems too, so alignment can't be skipped for
+wav output. Without correction the instrument lands 25 ms after the original,
+which sounds like a flam instead of a single instrument in the mix.
 """
 import argparse
 import sys
